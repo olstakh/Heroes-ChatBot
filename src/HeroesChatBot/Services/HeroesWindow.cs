@@ -11,6 +11,7 @@ public sealed class HeroesWindow
     private const uint KeyboardInput = 1;
     private const uint KeyUp = 0x0002;
     private const ushort AltKey = 0x12;
+    private const ushort BackspaceKey = 0x08;
     private const ushort ControlKey = 0x11;
     private const ushort ShiftKey = 0x10;
     private const uint LeftMouseDown = 0x0002;
@@ -64,8 +65,18 @@ public sealed class HeroesWindow
         ClickChatInput(window);
         await Task.Delay(150, cancellationToken);
         await SendTextAsync(window, message, cancellationToken);
-        await Task.Delay(150, cancellationToken);
-        ClickSendButton(window);
+        try
+        {
+            await Task.Delay(150, cancellationToken);
+            ClickSendButton(window);
+            await Task.Delay(200, CancellationToken.None);
+        }
+        finally
+        {
+            ClickChatInput(window);
+            await Task.Delay(100, CancellationToken.None);
+            await ClearUnsentTextAsync(message.Length, CancellationToken.None);
+        }
     }
 
     private static void SendKey(ushort virtualKey)
@@ -121,6 +132,27 @@ public sealed class HeroesWindow
         if ((modifiers & mask) != 0)
         {
             inputs.Add(CreateKeyboardInput(virtualKey, keyUp ? KeyUp : 0));
+        }
+    }
+
+    private static async Task ClearUnsentTextAsync(
+        int characterCount,
+        CancellationToken cancellationToken)
+    {
+        const int keysPerBatch = 32;
+        for (var remaining = characterCount; remaining > 0; remaining -= keysPerBatch)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var currentBatchSize = Math.Min(remaining, keysPerBatch);
+            var inputs = new Input[currentBatchSize * 2];
+            for (var index = 0; index < inputs.Length; index += 2)
+            {
+                inputs[index] = CreateKeyboardInput(BackspaceKey, 0);
+                inputs[index + 1] = CreateKeyboardInput(BackspaceKey, KeyUp);
+            }
+
+            SendKeyboardInputs(inputs);
+            await Task.Delay(8, cancellationToken);
         }
     }
 

@@ -20,7 +20,9 @@ confirmation that the intended private room is open.
 Message entry follows the legacy lobby's actual input flow: activate the game,
 click the private-room text field, type using the keyboard layout active in the
 game, and click the send-arrow button. The mouse therefore moves briefly for
-each message.
+each message. After the send attempt, the app refocuses the text field and
+issues Backspace events. This is harmless when the message was sent and clears
+the text when the lobby leaves it behind for an offline recipient.
 
 ## Build
 
