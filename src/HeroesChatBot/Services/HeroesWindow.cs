@@ -16,6 +16,7 @@ public sealed class HeroesWindow
     private const ushort ShiftKey = 0x10;
     private const uint LeftMouseDown = 0x0002;
     private const uint LeftMouseUp = 0x0004;
+    private const uint InputLanguageChangeRequest = 0x0050;
 
     public IntPtr FindLobbyWindow()
     {
@@ -92,34 +93,121 @@ public sealed class HeroesWindow
         CancellationToken cancellationToken)
     {
         var threadId = GetWindowThreadProcessId(window, IntPtr.Zero);
-        var keyboardLayout = GetKeyboardLayout(threadId);
+        var originalLayout = GetKeyboardLayout(threadId);
+        var activeLayout = originalLayout;
+        var installedLayouts = GetInstalledKeyboardLayouts();
 
-        foreach (var character in text)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var mapping = VkKeyScanEx(character, keyboardLayout);
-            if (mapping == -1)
+            foreach (var character in text)
             {
-                throw new InvalidOperationException(
-                    $"The character '{character}' is unavailable in the keyboard layout currently active in Heroes III.");
+                cancellationToken.ThrowIfCancellationRequested();
+                var characterLayout = FindLayoutForCharacter(
+                    character,
+                    activeLayout,
+                    installedLayouts);
+                if (characterLayout != activeLayout)
+                {
+                    await SwitchKeyboardLayoutAsync(
+                        window,
+                        threadId,
+                        characterLayout,
+                        cancellationToken);
+                    activeLayout = characterLayout;
+                }
+
+                var mapping = VkKeyScanEx(character, activeLayout);
+                var virtualKey = (ushort)(mapping & 0xFF);
+                var modifiers = (mapping >> 8) & 0xFF;
+                var inputs = new List<Input>(8);
+
+                AddModifier(inputs, modifiers, 1, ShiftKey, keyUp: false);
+                AddModifier(inputs, modifiers, 2, ControlKey, keyUp: false);
+                AddModifier(inputs, modifiers, 4, AltKey, keyUp: false);
+                inputs.Add(CreateKeyboardInput(virtualKey, 0));
+                inputs.Add(CreateKeyboardInput(virtualKey, KeyUp));
+                AddModifier(inputs, modifiers, 4, AltKey, keyUp: true);
+                AddModifier(inputs, modifiers, 2, ControlKey, keyUp: true);
+                AddModifier(inputs, modifiers, 1, ShiftKey, keyUp: true);
+
+                SendKeyboardInputs(inputs.ToArray());
+                await Task.Delay(12, cancellationToken);
             }
-
-            var virtualKey = (ushort)(mapping & 0xFF);
-            var modifiers = (mapping >> 8) & 0xFF;
-            var inputs = new List<Input>(8);
-
-            AddModifier(inputs, modifiers, 1, ShiftKey, keyUp: false);
-            AddModifier(inputs, modifiers, 2, ControlKey, keyUp: false);
-            AddModifier(inputs, modifiers, 4, AltKey, keyUp: false);
-            inputs.Add(CreateKeyboardInput(virtualKey, 0));
-            inputs.Add(CreateKeyboardInput(virtualKey, KeyUp));
-            AddModifier(inputs, modifiers, 4, AltKey, keyUp: true);
-            AddModifier(inputs, modifiers, 2, ControlKey, keyUp: true);
-            AddModifier(inputs, modifiers, 1, ShiftKey, keyUp: true);
-
-            SendKeyboardInputs(inputs.ToArray());
-            await Task.Delay(12, cancellationToken);
         }
+        finally
+        {
+            if (activeLayout != originalLayout)
+            {
+                await SwitchKeyboardLayoutAsync(
+                    window,
+                    threadId,
+                    originalLayout,
+                    CancellationToken.None);
+            }
+        }
+    }
+
+    private static IntPtr[] GetInstalledKeyboardLayouts()
+    {
+        var count = GetKeyboardLayoutList(0, null);
+        if (count <= 0)
+        {
+            return [];
+        }
+
+        var layouts = new IntPtr[count];
+        var copied = GetKeyboardLayoutList(layouts.Length, layouts);
+        return copied == layouts.Length ? layouts : layouts[..Math.Max(0, copied)];
+    }
+
+    private static IntPtr FindLayoutForCharacter(
+        char character,
+        IntPtr activeLayout,
+        IEnumerable<IntPtr> installedLayouts)
+    {
+        if (VkKeyScanEx(character, activeLayout) != -1)
+        {
+            return activeLayout;
+        }
+
+        foreach (var layout in installedLayouts)
+        {
+            if (VkKeyScanEx(character, layout) != -1)
+            {
+                return layout;
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"The character '{character}' is unavailable in the keyboard layouts installed in Windows.");
+    }
+
+    private static async Task SwitchKeyboardLayoutAsync(
+        IntPtr window,
+        uint threadId,
+        IntPtr keyboardLayout,
+        CancellationToken cancellationToken)
+    {
+        if (!PostMessage(
+                window,
+                InputLanguageChangeRequest,
+                IntPtr.Zero,
+                keyboardLayout))
+        {
+            throw new InvalidOperationException("Could not switch the Heroes III keyboard layout.");
+        }
+
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            await Task.Delay(15, cancellationToken);
+            if (GetKeyboardLayout(threadId) == keyboardLayout)
+            {
+                return;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Heroes III did not accept the requested keyboard layout.");
     }
 
     private static void AddModifier(
@@ -242,8 +330,19 @@ public sealed class HeroesWindow
     [DllImport("user32.dll")]
     private static extern IntPtr GetKeyboardLayout(uint threadId);
 
+    [DllImport("user32.dll")]
+    private static extern int GetKeyboardLayoutList(int bufferLength, IntPtr[]? keyboardLayouts);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern short VkKeyScanEx(char character, IntPtr keyboardLayout);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(
+        IntPtr window,
+        uint message,
+        IntPtr wordParameter,
+        IntPtr longParameter);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
